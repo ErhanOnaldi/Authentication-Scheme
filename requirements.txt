@@ -1,0 +1,10 @@
+cryptography
+ecdsa
+hashlib
+secrets
+pycryptodome
+pyopenssl
+paho-mqtt
+boto3
+oauthlib
+pyjwt
