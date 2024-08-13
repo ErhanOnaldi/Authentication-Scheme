@@ -16,6 +16,16 @@ class TrustedAuthority:
 
     def get_private_key(self):
         return self.private_key
+    def process_registration(self, request):
+        UIDi = request['UIDi']
+        e = self.generate_nonce()
+        RTi = self.generate_timestamp()
+
+        mi = h1(str(x) + str(e)) * self.G  # mi = h1(x∥e).G
+        Hn = h1(UIDi + str(mi) + str(RTi))
+        Vi = h1(str(x) + str(e)) ^ h2(UIDi)
+
+        return {"Vi": Vi, "RTi": RTi}
 
 # Test
 if __name__ == "__main__":

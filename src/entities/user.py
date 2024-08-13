@@ -4,6 +4,10 @@ class User:
     def __init__(self, user_id, password):
         self.user_id = user_id
         self.password = password
+    
+    def store_in_smart_card(self, Vi, RTi):
+        self.smart_card['Vi'] = Vi
+        self.smart_card['RTi'] = RTi
 
 # Test
 if __name__ == "__main__":
