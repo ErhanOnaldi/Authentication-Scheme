@@ -1,4 +1,3 @@
-
 import os
 import time
 from cryptography.hazmat.primitives import serialization
@@ -24,7 +23,6 @@ class TrustedAuthority:
         self.h1 = self._hash_function
         self.h2 = self._hash_function
 
-
     def _generate_master_key(self):
         return ec.generate_private_key(self.curve, self.backend)
 
@@ -40,10 +38,18 @@ class TrustedAuthority:
         poly = sympy.Add(*terms)
         return sympy.poly(poly, x, y, z, domain=sympy.FF(self.p))
 
-    def _hash_function(self, data, output_length=32):  # Varsayılan çıktı uzunluğu 32
+    def _hash_function(self, data, output_length=32):
+        """General hash function for h0 and h1."""
         digest = hashes.Hash(hashes.SHA3_512(), backend=self.backend)
         digest.update(data)
         return digest.finalize()[:output_length]
+
+    def _hash_function_z_star(self, data, output_length=32):
+        """Hash function for h2 that ensures output is in Z*."""
+        while True:
+            result = self._hash_function(data, output_length)
+            if int.from_bytes(result, 'big') != 0:
+                return result
 
     def _generate_id(self):
         return os.urandom(32)
@@ -54,17 +60,18 @@ class TrustedAuthority:
     def _generate_n(self):
         return secrets.randbelow(self.order)
 
-    def _compute_public_key(self, private_key):
+    def _compute_public_key(self, n):
+        """Computes the public key as n * G."""
+        private_key = ec.derive_private_key(n, self.curve, self.backend)
         return private_key.public_key()
-    
+
     def _encrypt(self, data, key):
         iv = os.urandom(16)
         cipher = Cipher(algorithms.AES(key), modes.GCM(iv), backend=self.backend)
         encryptor = cipher.encryptor()
         ciphertext = encryptor.update(data) + encryptor.finalize()
         return iv + encryptor.tag + ciphertext
-    
-    
+
     def _derive_key(self, shared_key):
         return HKDF(
             algorithm=hashes.SHA3_256(),
@@ -81,11 +88,10 @@ class TrustedAuthority:
 
         TID = self._hash_function(ID + self.master_key.private_numbers().private_value.to_bytes(48, 'big') + n.to_bytes(48, 'big'))
         CID = self._hash_function(TID + RT.to_bytes(48, 'big') + n.to_bytes(48, 'big'))
-        
-        private_key = ec.derive_private_key(n, self.curve, self.backend)
-        public_key = self._compute_public_key(private_key)
 
-        # Public key'i PEM formatında serileştirme
+        # Compute public key as n * G
+        public_key = self._compute_public_key(n)
+
         public_key_pem = public_key.public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
@@ -99,8 +105,8 @@ class TrustedAuthority:
             "CID": CID,
             "RT": RT,
             "n": n,
-            "G": ec.generate_private_key(self.curve, self.backend).public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo),
-            "Gpub": self.public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo),
+            "G": self.public_key,  # The G value is the TA's public key
+            "Gpub": self.public_key,
             "h0": self.h0,
             "h1": self.h1,
             "h2": self.h2,
@@ -111,9 +117,7 @@ class TrustedAuthority:
         if entity_type in ["fog", "device"]:
             entity_data["g"] = self.g
 
-        encrypted_data = self._encrypt(str(entity_data).encode(), derived_key)
-
-        return encrypted_data, public_key_pem
+        return entity_data, public_key_pem
 
     def register_cloud_server(self):
         return self._register_entity("cloud")
@@ -124,7 +128,6 @@ class TrustedAuthority:
     def register_smart_device(self):
         return self._register_entity("device")
 
-
 if __name__ == "__main__":
     ta = TrustedAuthority()
     cloud_data, cloud_public_key_pem = ta.register_cloud_server()
@@ -134,3 +137,7 @@ if __name__ == "__main__":
     print("Cloud Server Public Key (PEM):", cloud_public_key_pem.decode('utf-8'))
     print("Fog Node Public Key (PEM):", fog_public_key_pem.decode('utf-8'))
     print("Smart Device Public Key (PEM):", device_public_key_pem.decode('utf-8'))
+
+    print("Cloud Server Data:", cloud_data)
+    print("Fog Node Data:", fog_data)
+    print("Smart Device Data:", device_data)
