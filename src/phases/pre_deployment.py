@@ -11,7 +11,7 @@ import sympy
 
 class TrustedAuthority:
     def __init__(self, curve_name="secp384r1", polynomial_degree=3):
-        self.curve = ec.SECP384R1()  # Makalede belirtilen eğri
+        self.curve = ec.SECP384R1() 
         self.backend = default_backend()
         self.master_key = self._generate_master_key()
         self.public_key = self.master_key.public_key()
@@ -21,20 +21,54 @@ class TrustedAuthority:
         self.order = 0xFFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFF_FFFFFFFF_C7634D81_F4372DDF_581A0DB2_48B0A77A_ECEC196A_CCC52973
         self.h0 = self._hash_function  # h0, h1, h2 aynı fonksiyonu kullanıyor
         self.h1 = self._hash_function
-        self.h2 = self._hash_function
+        self.h2 = self._hash_function_z_star
+
+        #x = 0xaa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7
+        #y = 0x3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f
+        #self.G = (x, y)
+        self.G = ec.EllipticCurvePublicNumbers(
+            x=0xaa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7,
+            y=0x3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f,
+            curve=self.curve
+        ).public_key(self.backend)
+        
 
     def _generate_master_key(self):
         return ec.generate_private_key(self.curve, self.backend)
+    
+    def generate_symmetric_polynomial(degree, p):
+        x, y, z = sympy.symbols('x y z')
+        terms = []
+        for i in range(degree + 1):
+            for j in range(i, degree + 1):  # j'yi i'den başlatın
+                for k in range(j, degree + 1):  # k'yı j'den başlatın
+                    coeff = secrets.randbelow(p)
+                    if coeff != 0:
+                        # Simetrik terimleri ekleyin
+                        terms.append(coeff * x**i * y**j * z**k)
+                        terms.append(coeff * x**i * z**j * y**k)
+                        terms.append(coeff * y**i * x**j * z**k)
+                        terms.append(coeff * y**i * z**j * x**k)
+                        terms.append(coeff * z**i * x**j * y**k)
+                        terms.append(coeff * z**i * y**j * x**k)
+        poly = sympy.Add(*terms)
+        return sympy.poly(poly, x, y, z, domain=sympy.FF(p))
 
     def _generate_polynomial(self, degree):
         x, y, z = sympy.symbols('x y z')
         terms = []
         for i in range(degree + 1):
-            for j in range(degree + 1):
-                for k in range(degree + 1):
+            for j in range(i, degree + 1):  # j'yi i'den başlatın
+                for k in range(j, degree + 1):  # k'yı j'den başlatın
                     coeff = secrets.randbelow(self.p)
                     if coeff != 0:
+                        # Simetrik terimleri ekleyin
                         terms.append(coeff * x**i * y**j * z**k)
+                        terms.append(coeff * x**i * z**j * y**k)
+                        terms.append(coeff * y**i * x**j * z**k)
+                        terms.append(coeff * y**i * z**j * x**k)
+                        terms.append(coeff * z**i * x**j * y**k)
+                        terms.append(coeff * z**i * y**j * x**k)
         poly = sympy.Add(*terms)
         return sympy.poly(poly, x, y, z, domain=sympy.FF(self.p))
 
@@ -55,16 +89,14 @@ class TrustedAuthority:
         return os.urandom(32)
 
     def _generate_rt(self):
-        return int(time.time())  # Gerçek zaman damgası
+        return int(time.time()) 
 
     def _generate_n(self):
         return secrets.randbelow(self.order)
 
-    def _compute_public_key(self, n):
-        """Computes the public key as n * G."""
-        private_key = ec.derive_private_key(n, self.curve, self.backend)
+    def _compute_public_key(self, private_key):
         return private_key.public_key()
-
+    
     def _encrypt(self, data, key):
         iv = os.urandom(16)
         cipher = Cipher(algorithms.AES(key), modes.GCM(iv), backend=self.backend)
@@ -89,13 +121,8 @@ class TrustedAuthority:
         TID = self._hash_function(ID + self.master_key.private_numbers().private_value.to_bytes(48, 'big') + n.to_bytes(48, 'big'))
         CID = self._hash_function(TID + RT.to_bytes(48, 'big') + n.to_bytes(48, 'big'))
 
-        # Compute public key as n * G
-        public_key = self._compute_public_key(n)
-
-        public_key_pem = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
+        private_key = ec.derive_private_key(n, self.curve, self.backend)
+        public_key = private_key.public_key()
 
         shared_key = self.master_key.exchange(ec.ECDH(), public_key)
         derived_key = self._derive_key(shared_key)
@@ -105,7 +132,7 @@ class TrustedAuthority:
             "CID": CID,
             "RT": RT,
             "n": n,
-            "G": self.public_key,  # The G value is the TA's public key
+            "G": self.G,
             "Gpub": self.public_key,
             "h0": self.h0,
             "h1": self.h1,
@@ -117,7 +144,7 @@ class TrustedAuthority:
         if entity_type in ["fog", "device"]:
             entity_data["g"] = self.g
 
-        return entity_data, public_key_pem
+        return entity_data, public_key
 
     def register_cloud_server(self):
         return self._register_entity("cloud")
@@ -128,16 +155,38 @@ class TrustedAuthority:
     def register_smart_device(self):
         return self._register_entity("device")
 
+
 if __name__ == "__main__":
     ta = TrustedAuthority()
-    cloud_data, cloud_public_key_pem = ta.register_cloud_server()
-    fog_data, fog_public_key_pem = ta.register_fog_node()
-    device_data, device_public_key_pem = ta.register_smart_device()
+    cloud_data, cloud_public_key = ta.register_cloud_server()
+    fog_data, fog_public_key = ta.register_fog_node()
+    device_data, device_public_key = ta.register_smart_device()
 
-    print("Cloud Server Public Key (PEM):", cloud_public_key_pem.decode('utf-8'))
-    print("Fog Node Public Key (PEM):", fog_public_key_pem.decode('utf-8'))
-    print("Smart Device Public Key (PEM):", device_public_key_pem.decode('utf-8'))
+    # Dönüştürme işlemleri burada yapılacak
+    print("Cloud Server Public Key (PEM):", cloud_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8'))
+    print("Fog Node Public Key (PEM):", fog_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8'))
+    print("Smart Device Public Key (PEM):", device_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8'))
 
-    print("Cloud Server Data:", cloud_data)
-    print("Fog Node Data:", fog_data)
-    print("Smart Device Data:", device_data)
+    print("Cloud Server Data:")
+    for key, value in cloud_data.items():
+        if isinstance(value, bytes):
+            value = value.hex()  
+        elif hasattr(value, 'public_bytes'):
+            value = value.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')  # Public key'leri PEM formatına dönüştür
+        print(f"  {key}: {value}")
+
+    print("Fog Node Data:")
+    for key, value in fog_data.items():
+        if isinstance(value, bytes):
+            value = value.hex() 
+        elif hasattr(value, 'public_bytes'):
+            value = value.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
+        print(f"  {key}: {value}")
+
+    print("Smart Device Data:")
+    for key, value in device_data.items():
+        if isinstance(value, bytes):
+            value = value.hex()
+        elif hasattr(value, 'public_bytes'):
+            value = value.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
+        print(f"  {key}: {value}")
