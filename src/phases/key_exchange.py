@@ -1,4 +1,3 @@
-
 import os
 import time
 import secrets
@@ -7,6 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 import sympy
+import utils
 
 class SecureKeyExchange:
     def __init__(self):
@@ -17,11 +17,10 @@ class SecureKeyExchange:
         self.fog_data, self.fog_public_key = self.ta.register_fog_node()
         self.device_data, self.device_public_key = self.ta.register_smart_device()
 
-        print("TA Data Loaded:")
-        print("Cloud Data:", self.cloud_data)
-        print("Fog Data:", self.fog_data)
-        print("Device Data:", self.device_data)
+        self.G = self.device_data["G"]
+        self.Gpub = self.device_data["Gpub"]
 
+        print("TA Data Loaded")
         # Extract the relevant keys and functions
         self.device_h0 = self.device_data["h0"]
         self.device_n = self.device_data["n"]
@@ -47,11 +46,9 @@ class SecureKeyExchange:
         return r, ts
 
     def point_multiply(self, public_key, scalar):
-        print(f"Multiplying point {public_key.public_numbers()} by scalar {scalar}...")
+        print(f"Multiplying point {public_key.public_numbers()} by scalar {scalar} using Double and Add method...")
         curve = public_key.curve
-        private_key = ec.derive_private_key(scalar, curve, default_backend())
-        result = private_key.public_key()
-        print(f"Result of multiplication: {result.public_numbers()}")
+        result = utils.scalar_mult(scalar, public_key, curve)
         return result
 
     def convert_to_ff_element(self, data):
@@ -61,8 +58,9 @@ class SecureKeyExchange:
     def device_to_fog(self):
         print("Device to Fog key exchange initiated...")
         r1, TS1 = self.generate_r_and_ts()
-        G1 = self.point_multiply(self.fog_Gpub, r1)
-        G2 = self.point_multiply(self.device_Gpub, r1)
+        G1 = self.point_multiply(self.fog_public_key, r1)
+        print(f"G1: {G1.public_numbers()}")
+        G2 = self.point_multiply(self.device_G, r1)
         G1_bytes = G1.public_numbers().x.to_bytes((G1.public_numbers().x.bit_length() + 7) // 8, 'big')
         print(f"G1_bytes: {G1_bytes.hex()}")
 
@@ -73,6 +71,7 @@ class SecureKeyExchange:
         M1 = self.device_h0(RIDs.to_bytes((RIDs.bit_length() + 7) // 8, 'big') + self.device_n.to_bytes((self.device_n.bit_length() + 7) // 8, 'big') + G1_bytes + TS1.to_bytes(8, 'big'))
         print(f"M1: {M1.hex()}")
 
+        
         message_to_fog = {
             "CIDs": self.device_CID,
             "RIDs": RIDs,
@@ -92,6 +91,8 @@ class SecureKeyExchange:
             raise ValueError("Message is outdated")
 
         G2 = message_from_device["G2"]
+        print(f"Received G2: {G2.public_numbers()}")
+        print(f"fog_n: {self.fog_n}")
         G_prime_1 = self.point_multiply(G2, self.fog_n)
         print(f"G_prime_1: {G_prime_1.public_numbers()}")
         G_prime_1_bytes = G_prime_1.public_numbers().x.to_bytes((G_prime_1.public_numbers().x.bit_length() + 7) // 8, 'big')
@@ -111,7 +112,7 @@ class SecureKeyExchange:
             raise ValueError("M1 verification failed")
 
         r2, TS2 = self.generate_r_and_ts()
-        G3 = self.point_multiply(self.device_Gpub, r2)
+        G3 = self.point_multiply(self.device_public_key, r2)
         G4 = self.point_multiply(self.device_G, r2)
 
         # Convert IDs to FF elements
@@ -226,8 +227,8 @@ class SecureKeyExchange:
     def fog_to_cloud(self):
         print("Fog to Cloud key exchange initiated...")
         r3, TS3 = self.generate_r_and_ts()
-        G5 = self.point_multiply(self.cloud_Gpub, r3)
-        G6 = self.point_multiply(self.fog_Gpub, r3)
+        G5 = self.point_multiply(self.cloud_public_key, r3)
+        G6 = self.point_multiply(self.G, r3)
         G5_bytes = G5.public_numbers().x.to_bytes((G5.public_numbers().x.bit_length() + 7) // 8, 'big')
         print(f"G5_bytes: {G5_bytes.hex()}")
 
@@ -245,22 +246,20 @@ class SecureKeyExchange:
             "M3": M3
         }
         print("Message to Cloud:", message_to_cloud)
-        return message_to_cloud, r3, G5
+        return message_to_cloud, r3, G5, G6
 
-    def cloud_response(self, message_from_fog, r3, G5):
+    def cloud_response(self, message_from_fog, r3, G5, G6):
         print("Cloud processing response from Fog...")
         TS3 = message_from_fog["TS3"]
         current_ts = int(time.time())
         print(f"Received TS3: {TS3}, Current TS: {current_ts}")
         if abs(current_ts - TS3) > 1:
             raise ValueError("Message is outdated")
-
-        G6 = self.point_multiply(self.fog_Gpub, r3)
+        
         G_prime_5 = self.point_multiply(G6, self.cloud_n)
         print(f"G_prime_5: {G_prime_5.public_numbers()}")
         G_prime_5_bytes = G_prime_5.public_numbers().x.to_bytes((G_prime_5.public_numbers().x.bit_length() + 7) // 8, 'big')
         print(f"G_prime_5_bytes: {G_prime_5_bytes.hex()}")
-
         G5_bytes = G5.public_numbers().x.to_bytes((G5.public_numbers().x.bit_length() + 7) // 8, 'big')
         Cf_prime = int.from_bytes(self.cloud_h0(message_from_fog["CIDf"] + self.fog_n.to_bytes((self.fog_n.bit_length() + 7) // 8, 'big') + G5_bytes), 'big') ^ G5.public_numbers().x
         print(f"Cf_prime: {Cf_prime}")
@@ -387,11 +386,11 @@ if __name__ == "__main__":
 
     # Fog Node initiates key exchange with Cloud Server
     print("\n--- Fog to Cloud Key Exchange ---")
-    message_to_cloud, r3, G5 = key_exchange.fog_to_cloud()
+    message_to_cloud, r3, G5, G6 = key_exchange.fog_to_cloud()
 
     # Cloud processes the message from Fog Node and responds
     print("\n--- Cloud to Fog Response ---")
-    message_from_cloud = key_exchange.cloud_response(message_to_cloud, r3, G5)
+    message_from_cloud = key_exchange.cloud_response(message_to_cloud, r3, G5, G6)
 
     # Fog Node processes the response from Cloud and completes the exchange
     print("\n--- Fog Final Response ---")

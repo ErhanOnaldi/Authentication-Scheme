@@ -9,7 +9,6 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import sympy
 
-
 class TrustedAuthority:
     def __init__(self, curve_name="secp384r1", polynomial_degree=3):
         self.curve = ec.SECP384R1() 
@@ -23,14 +22,12 @@ class TrustedAuthority:
         self.h0 = self._hash_function  # h0, h1 aynı fonksiyonu kullanıyor
         self.h1 = self._hash_function
         self.h2 = self._hash_function_z_star #h2
-
         self.G = ec.EllipticCurvePublicNumbers(
             x=0xaa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7,
             y=0x3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f,
             curve=self.curve
         ).public_key(self.backend)
-        
-
+    
     def _generate_master_key(self):
         return ec.generate_private_key(self.curve, self.backend)
 
@@ -51,20 +48,19 @@ class TrustedAuthority:
                         terms.append(coeff * z**i * y**j * x**k)
         poly = sympy.Add(*terms)
         return sympy.poly(poly, x, y, z, domain=sympy.FF(self.p))
-
+    
     def _hash_function(self, data, output_length=32):
-        #Hash function for h0 and h1.
+        """General hash function for h0 and h1."""
         digest = hashes.Hash(hashes.SHA3_512(), backend=self.backend)
         digest.update(data)
         return digest.finalize()[:output_length]
 
     def _hash_function_z_star(self, data, output_length=32):
-        #Hash function for h2 that ensures output is in Z*.
+        """Hash function for h2 that ensures output is in Z*."""
         while True:
             result = self._hash_function(data, output_length)
             if int.from_bytes(result, 'big') != 0:
                 return result
-
     def _generate_id(self):
         return os.urandom(32)
 
@@ -134,39 +130,4 @@ class TrustedAuthority:
 
     def register_smart_device(self):
         return self._register_entity("device")
-
-
-if __name__ == "__main__":
-    ta = TrustedAuthority()
-    cloud_data, cloud_public_key = ta.register_cloud_server()
-    fog_data, fog_public_key = ta.register_fog_node()
-    device_data, device_public_key = ta.register_smart_device()
-
-    # Dönüştürme işlemleri burada yapılacak
-    print("Cloud Server Public Key (PEM):", cloud_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8'))
-    print("Fog Node Public Key (PEM):", fog_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8'))
-    print("Smart Device Public Key (PEM):", device_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8'))
-
-    print("Cloud Server Data:")
-    for key, value in cloud_data.items():
-        if isinstance(value, bytes):
-            value = value.hex()  
-        elif hasattr(value, 'public_bytes'):
-            value = value.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')  # Public key'leri PEM formatına dönüştür
-        print(f"  {key}: {value}")
-
-    print("Fog Node Data:")
-    for key, value in fog_data.items():
-        if isinstance(value, bytes):
-            value = value.hex() 
-        elif hasattr(value, 'public_bytes'):
-            value = value.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
-        print(f"  {key}: {value}")
-
-    print("Smart Device Data:")
-    for key, value in device_data.items():
-        if isinstance(value, bytes):
-            value = value.hex()
-        elif hasattr(value, 'public_bytes'):
-            value = value.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
-        print(f"  {key}: {value}")
+    
