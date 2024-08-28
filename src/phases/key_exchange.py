@@ -1,3 +1,4 @@
+
 import os
 import time
 import secrets
@@ -162,7 +163,7 @@ class SecureKeyExchange:
             "TS2": TS2
         }
         print("Message to Device:", message_to_device)
-        return message_to_device
+        return message_to_device, G4
 
 
     def device_response(self, message_from_fog, r1, G1, G1_bytes):
@@ -258,29 +259,41 @@ class SecureKeyExchange:
         
         G_prime_5 = self.point_multiply(G6, self.cloud_n)
         print(f"G_prime_5: {G_prime_5.public_numbers()}")
+
         G_prime_5_bytes = G_prime_5.public_numbers().x.to_bytes((G_prime_5.public_numbers().x.bit_length() + 7) // 8, 'big')
         print(f"G_prime_5_bytes: {G_prime_5_bytes.hex()}")
         G5_bytes = G5.public_numbers().x.to_bytes((G5.public_numbers().x.bit_length() + 7) // 8, 'big')
-        Cf_prime = int.from_bytes(self.cloud_h0(message_from_fog["CIDf"] + self.fog_n.to_bytes((self.fog_n.bit_length() + 7) // 8, 'big') + G5_bytes), 'big') ^ G5.public_numbers().x
-        print(f"Cf_prime: {Cf_prime}")
-        nc = message_from_fog["RIDf"] ^ int.from_bytes(self.cloud_h0(G5_bytes + TS3.to_bytes(8, 'big')), 'big')
-        print(f"nc: {nc}")
 
-        M3_prime = self.cloud_h0(nc.to_bytes((nc.bit_length() + 7) // 8, 'big') + self.fog_n.to_bytes((self.fog_n.bit_length() + 7) // 8, 'big') + G5_bytes + TS3.to_bytes(8, 'big'))
-        print(f"M3_prime: {M3_prime.hex()}")
+        nf = message_from_fog["RIDf"] ^ int.from_bytes(self.cloud_h0(G5_bytes + TS3.to_bytes(8, 'big')), 'big')
+        print(f"nf: {nf}")
+
+        Cf_prime = int.from_bytes(self.cloud_h0(
+        message_from_fog["CIDf"] + 
+        nf.to_bytes((nf.bit_length() + 7) // 8, 'big')), 'big') ^ G_prime_5.public_numbers().x
+
+        print(f"Cf_prime: {Cf_prime}")
+        
+
+        M3_prime = self.cloud_h0(message_from_fog["RIDf"].to_bytes((message_from_fog["RIDf"].bit_length() + 7) // 8, 'big') +
+        nf.to_bytes((nf.bit_length() + 7) // 8, 'big') +
+        G_prime_5_bytes +
+        TS3.to_bytes(8, 'big'))
+
         if not secrets.compare_digest(M3_prime, message_from_fog["M3"]):
             raise ValueError("M3 verification failed")
+        
+        print(f"M3_prime: {M3_prime.hex()}")    
 
         r4, TS4 = self.generate_r_and_ts()
         G7 = self.point_multiply(self.fog_public_key, r4)
-        G8 = self.point_multiply(self.fog_Gpub, r4)
+        G8 = self.point_multiply(self.G, r4)
 
         # Convert IDs to FF elements
         cloud_CID_ff = self.convert_to_ff_element(self.cloud_CID)
         CIDf_ff = self.convert_to_ff_element(message_from_fog["CIDf"])
 
-        f1 = self.ta.f(cloud_CID_ff, CIDf_ff, 1)
-        f2 = self.ta.f(cloud_CID_ff, CIDf_ff, r4)
+        f1 = self.ta.f(cloud_CID_ff, CIDf_ff, 1) % self.ta.p
+        f2 = self.ta.f(cloud_CID_ff, CIDf_ff, r4) % self.ta.p
 
         print(f"cloud_CID_ff: {cloud_CID_ff}")
         print(f"CIDf_ff: {CIDf_ff}")
@@ -291,8 +304,22 @@ class SecureKeyExchange:
         print(f"TS4: {TS4}")
 
         # Convert f1 and f2 to int before calling to_bytes
-        CSID = r4 ^ int.from_bytes(self.cloud_h0(int(f1).to_bytes((f1.bit_length() + 7) // 8, 'big') + G7.public_numbers().x.to_bytes((G7.public_numbers().x.bit_length() + 7) // 8, 'big') + G5_bytes + TS4.to_bytes(8, 'big')), 'big')
-        Kcf = self.cloud_h0(int(f2).to_bytes((f2.bit_length() + 7) // 8, 'big') + G7.public_numbers().x.to_bytes((G7.public_numbers().x.bit_length() + 7) // 8, 'big') + G5_bytes + r4.to_bytes((r4.bit_length() + 7) // 8, 'big'))
+        CSID = r4 ^ int.from_bytes(
+            self.cloud_h0(
+                int(f1).to_bytes((int(f1).bit_length() + 7) // 8, 'big') + 
+                G7.public_numbers().x.to_bytes((G7.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                G_prime_5_bytes + 
+                TS4.to_bytes(8, 'big')
+            ), 
+            'big'
+        )
+        
+        Kcf = self.cloud_h0(
+            int(f2).to_bytes((int(f2).bit_length() + 7) // 8, 'big') + 
+            G7.public_numbers().x.to_bytes((G7.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+            G_prime_5_bytes + 
+            r4.to_bytes((r4.bit_length() + 7) // 8, 'big')
+        )
 
         print(f"CSID: {CSID}")
         print(f"Kcf: {Kcf.hex()}")
@@ -311,9 +338,9 @@ class SecureKeyExchange:
             "TS4": TS4
         }
         print("Message to Fog:", message_to_fog)
-        return message_to_fog
+        return message_to_fog, nf
 
-    def fog_response(self, message_from_cloud, r3, G5):
+    def fog_response(self, message_from_cloud, r3, G5, nf):
         print("Fog processing response from Cloud...")
         TS4 = message_from_cloud["TS4"]
         current_ts = int(time.time())
@@ -322,19 +349,19 @@ class SecureKeyExchange:
             raise ValueError("Message is outdated")
 
         G8 = message_from_cloud["G8"]
-        G7_prime = self.point_multiply(G8, self.fog_n)
+        G7_prime = self.point_multiply(G8, nf)
         print(f"G7_prime: {G7_prime.public_numbers()}")
 
         # Convert IDs to FF elements
         fog_CID_ff = self.convert_to_ff_element(self.fog_CID)
         CIDc_ff = self.convert_to_ff_element(message_from_cloud["CIDc"])
 
-        f1_prime = self.ta.f(fog_CID_ff, CIDc_ff, 1)
+        f1_prime = self.ta.f(fog_CID_ff, CIDc_ff, 1) % self.ta.p
         print(f"f1_prime: {f1_prime}")
 
         r4_prime = message_from_cloud["CSID"] ^ int.from_bytes(
             self.fog_h0(
-                int(f1_prime).to_bytes((f1_prime.bit_length() + 7) // 8, 'big') +
+                int(f1_prime).to_bytes((int(f1_prime).bit_length() + 7) // 8, 'big') +
                 G7_prime.public_numbers().x.to_bytes((G7_prime.public_numbers().x.bit_length() + 7) // 8, 'big') +
                 G5.public_numbers().x.to_bytes((G5.public_numbers().x.bit_length() + 7) // 8, 'big') +
                 TS4.to_bytes(8, 'big')
@@ -343,11 +370,11 @@ class SecureKeyExchange:
         )
         print(f"r4_prime: {r4_prime}")
 
-        f2_prime = self.ta.f(fog_CID_ff, CIDc_ff, r4_prime)
+        f2_prime = self.ta.f(fog_CID_ff, CIDc_ff, r4_prime) % self.ta.p
         print(f"f2_prime: {f2_prime}")
 
         Kfc_prime = self.fog_h0(
-            int(f2_prime).to_bytes((f2_prime.bit_length() + 7) // 8, 'big') +
+            int(f2_prime).to_bytes((int(f2_prime).bit_length() + 7) // 8, 'big') +
             G7_prime.public_numbers().x.to_bytes((G7_prime.public_numbers().x.bit_length() + 7) // 8, 'big') +
             G5.public_numbers().x.to_bytes((G5.public_numbers().x.bit_length() + 7) // 8, 'big') +
             r4_prime.to_bytes((r4_prime.bit_length() + 7) // 8, 'big')
@@ -377,7 +404,7 @@ if __name__ == "__main__":
 
     # Fog processes the message from Device and responds
     print("\n--- Fog to Device Response ---")
-    message_from_fog = key_exchange.fog_to_device(message_to_fog, r1, G1_bytes)
+    message_from_fog, G4 = key_exchange.fog_to_device(message_to_fog, r1, G1_bytes)
 
     # Device processes the response from Fog and completes the exchange
     print("\n--- Device Final Response ---")
@@ -390,9 +417,9 @@ if __name__ == "__main__":
 
     # Cloud processes the message from Fog Node and responds
     print("\n--- Cloud to Fog Response ---")
-    message_from_cloud = key_exchange.cloud_response(message_to_cloud, r3, G5, G6)
+    message_from_cloud, nf = key_exchange.cloud_response(message_to_cloud, r3, G5, G6)
 
     # Fog Node processes the response from Cloud and completes the exchange
     print("\n--- Fog Final Response ---")
-    Kfc = key_exchange.fog_response(message_from_cloud, r3, G5)
+    Kfc = key_exchange.fog_response(message_from_cloud, r3, G5, nf)
     print("Key exchange between Fog Node and Cloud Server successful, Kfc =", Kfc.hex())
