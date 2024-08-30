@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import sympy
 import utils
+import fuzzyextractor
 
 class Entity:
     def __init__(self, p, f, g, order, h0, h1, h2, G, cloud_public_key, fog_public_key, device_public_key):
@@ -195,7 +196,33 @@ class TrustedAuthority:
         return result
 
 
+class SmartCard:
+    def __init__(self):
+        self.storage = {}
+
+    def store(self, key, value):
+        """Veriyi SmartCard'a kaydeder."""
+        self.storage[key] = value
+
+    def retrieve(self, key):
+        """SmartCard'dan veri alır."""
+        return self.storage.get(key)
+
+    def execute_gen(self, BIOi):
+        """SmartCard'da saklanan Gen fonksiyonunu çalıştırır."""
+        return self.storage['Gen'](BIOi)
+
+    def execute_rep(self, BIOi, σi):
+        """SmartCard'da saklanan Rep fonksiyonunu çalıştırır."""
+        return self.storage['Rep'](BIOi, σi)
+
+    def clear(self):
+        """SmartCard'daki tüm verileri sıfırlar."""
+        self.storage.clear()
+
+
 class SmartDevice(Entity):
+    
     def __init__(self, device_data, p, f, g, order, h0, h1, h2, G, cloud_public_key, fog_public_key, device_public_key):
         super().__init__(p, f, g, order, h0, h1, h2, G, cloud_public_key, fog_public_key, device_public_key)
         self.device_h0 = device_data["h0"]
@@ -203,6 +230,8 @@ class SmartDevice(Entity):
         self.device_CID = device_data["CID"]
         self.Ksf = None
         self.user_information = {}
+        self.smart_card = SmartCard()
+        self.extractor = fuzzyextractor.FuzzyExtractor(16, 8)  # 16 byte input, 8 bit tolerance
         
     def identify_user(self):
         """Prompts the user for IDi and calculates UIDi."""
@@ -218,45 +247,163 @@ class SmartDevice(Entity):
         return UIDi
     
     def store_new_user(self, Vi, RTi):
-        """Stores new user information after registration."""
-        PWi = input("Please enter your password (PWi): ")
-        BIOi = input("Please input your biometric data (BIOi): ").encode()  # Encode to bytes
-        
-        # Generate (σi, τi) from BIOi
-        σi = self.h1(BIOi)  # Example generation for σi
-        τi = self.h2(BIOi)  # Example generation for τi
-        print("BIO created")
-        
-        # Calculate h(x∥e)′
-        hi_UIDi = int.from_bytes(self.h1(self.user_information['UIDi']), 'big')
-        h_x_e_prime = Vi ^ hi_UIDi
+        PWi = input("Enter Password: ")
+        BIOi = input("Enter BIO (Biometric): ").encode('utf-8')
 
-        # Calculate m′i = h1(x∥e)′ * G
+        # Ensure BIOi is of consistent length (e.g., 16 bytes)
+        BIOi = BIOi.ljust(16, b'\0')[:16]
+
+        # Gen(BIOi) = (σi, τi)
+        σi, τi = self.Gen(BIOi)
+        print(f"Generated key (σi) for storage: {σi.hex()}")
+
+        # h(x∥e)' = Vi ⊕ h(UIDi)
+        h_x_e_prime = Vi ^ int.from_bytes(self.h0(self.user_information['UIDi']), 'big')
+
+        # m'i = h1(x∥e)' * G
         m_prime_i = self.point_multiply(self.G, h_x_e_prime)
+
+        # RPW = h1(PWi∥σi∥m'i)
+        RPW = self.h1(PWi.encode('utf-8') + σi + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big'))
+
+        # Bi = h1(Hn' ∥ RPW ∥ bi)
+        Bi = self.h1(h_x_e_prime.to_bytes((h_x_e_prime.bit_length() + 7) // 8, 'big') + RPW + self.user_information['bi'])
+
+        # Ri = bi ⊕ h1(IDi ∥ PWi ∥ σi)
+        Ri = int.from_bytes(self.user_information['bi'], 'big') ^ int.from_bytes(self.h1(self.user_information['UIDi'] + PWi.encode('utf-8') + σi), 'big')
+
+        # Store the values
+        self.user_information['Bi'] = Bi
+        self.user_information['Ri'] = Ri
+        self.user_information['σi'] = σi
+        self.user_information['τi'] = τi
+        self.user_information['Vi'] = Vi
+        self.user_information['RTi'] = RTi
+
+        # SmartCard'a verileri kaydet
+        self.smart_card.store('Bi', Bi)
+        self.smart_card.store('Ri', Ri)
+        self.smart_card.store('τi', τi)
+        self.smart_card.store('Vi', Vi)
+        self.smart_card.store('RTi', RTi)
+        self.smart_card.store('Gen', self.Gen)
+        self.smart_card.store('Rep', self.Rep)
+        self.smart_card.store('h1', self.h1)
+        self.smart_card.store('h2', self.h2)
+
+        print(f"Stored key (σi): {σi.hex()}")
+        print("User information stored successfully in SmartCard!")
+
+    def login(self):
+        IDi = input("Please enter your ID (IDi): ")
+        PWi = input("Please enter your password (PWi): ")
+        BIOi = input("Please enter your biometric data (BIOi): ").encode('utf-8')
+
+        if not self.user_information:
+            print("No user information found. Please register first.")
+            return False
+
+        Vi = self.user_information['Vi']
+        Ri = self.user_information['Ri']
+        helper = self.user_information['τi']
+        print(f"Loaded τi: {helper}")
+
+        # Rep function to calculate σi'
+        is_valid, σi_prime = self.Rep(BIOi, helper)
+        if not is_valid:
+            print("Invalid biometric data.")
+            return False
+
+        # Calculate b'i
+        b_prime_i = Ri ^ int.from_bytes(self.h1(IDi.encode() + PWi.encode() + σi_prime), 'big')
+        print(f"Calculated b_prime_i: {b_prime_i}")
+
+        # Calculate UID'i
+        UID_prime_i = self.h1(IDi.encode() + b_prime_i.to_bytes((b_prime_i.bit_length() + 7) // 8, 'big'))
+        print(f"Calculated UID_prime_i: {UID_prime_i.hex()}")
+
+        # Calculate h(x∥e)'
+        h_x_e_prime = Vi ^ int.from_bytes(self.h0(UID_prime_i), 'big')
+        print(f"Calculated h_x_e_prime: {h_x_e_prime}")
+
+        # Calculate m'i
+        m_prime_i = self.point_multiply(self.G, h_x_e_prime)
+        print(f"Calculated m_prime_i: {m_prime_i.public_numbers().x}")
+
+        # Calculate H'n
+        H_prime_n = self.h1(UID_prime_i + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big') + self.user_information['RTi'].to_bytes(8, 'big'))
+        print(f"Calculated H_prime_n: {H_prime_n.hex()}")
+
+        # Calculate RPW'
+        RPW_prime = self.h1(PWi.encode() + σi_prime + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        print(f"Calculated RPW_prime: {RPW_prime.hex()}")
+
+        # Calculate B'i and verify
+        Bi_prime = self.h1(H_prime_n + RPW_prime + b_prime_i.to_bytes((b_prime_i.bit_length() + 7) // 8, 'big'))
+        print(f"Calculated Bi_prime: {Bi_prime.hex()}")
+        print(f"Stored Bi: {self.user_information['Bi'].hex()}")
+
+        if Bi_prime == self.user_information['Bi']:
+            print("Login successful!")
+            return True
+        else:
+            print("Login failed. Incorrect credentials.")
+            return False
+
+        # Adım 10: T1 ve w1 üretimi
+        T1 = int(time.time())
+        w1 = secrets.randbelow(self.G.curve.key_size)
+
+        # Adım 11: RV1 ve RV2 hesapla
+        RV1 = self.point_multiply(self.fog_public_key, w1)
+        RV2 = self.point_multiply(self.G, w1)
+
+        # Adım 12: Csm hesapla
+        Csm = self.h2(self.device_CID + T1.to_bytes(8, 'big') + RV1.public_numbers().x.to_bytes((RV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        Csm = int.from_bytes(Csm, 'big') ^ h_x_e_prime
+        Csm = Csm.to_bytes((Csm.bit_length() + 7) // 8, 'big')
+
+        # Adım 13: DUIDi hesapla ve mesajı oluştur
+        DUIDi = self.h2(self.device_CID + RV1.public_numbers().x.to_bytes((RV1.public_numbers().x.bit_length() + 7) // 8, 'big') + T1.to_bytes(8, 'big') + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big'))
+
+        message_to_fog = {
+            "CIDs": self.device_CID,
+            "RV2": RV2,
+            "Csm": Csm,
+            "T1": T1,
+            "DUIDi": DUIDi
+        }
+
+        print("Login phase completed. Message to Fog Server prepared.")
+        return message_to_fog
+
         
-        # Convert m_prime_i to bytes
-        m_prime_i_bytes = m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big')
 
-        # Calculate Hn, RPW, Bi, and Ri
-        Hn = self.h1(self.user_information['UIDi'] + m_prime_i_bytes + RTi.to_bytes(48, 'big'))
-        RPW = self.h1(PWi.encode() + σi + m_prime_i_bytes)
-        Bi = self.h1(Hn + RPW + self.user_information['bi'])
-        Ri = int.from_bytes(self.user_information['bi'], 'big') ^ int.from_bytes(self.h1(self.user_information['IDi'].encode() + PWi.encode() + σi), 'big')
+    def Gen(self, BIOi):
+        """Gen fonksiyonu: Biometrik verilerden (σi, τi) değerlerini üretir."""
+        key, helper = self.extractor.generate(BIOi)
+        print(f"Generated key: {key.hex()}, helper: {helper}")
+        return key, helper
 
-        # Store all relevant information in user_information
-        self.user_information.update({
-            'PWi': PWi,
-            'BIOi': BIOi,
-            'σi': σi,
-            'τi': τi,
-            'Vi': Vi,
-            'RTi': RTi,
-            'm_prime_i': m_prime_i,
-            'Hn': Hn,
-            'RPW': RPW,
-            'Bi': Bi,
-            'Ri': Ri,
-        })
+
+    def Rep(self, BIOi, helper):
+        """Rep fonksiyonu: Biometrik veriyi ve helper değerini kullanarak σ'i üretir."""
+        σi_prime = self.extractor.reproduce(BIOi, helper)
+        is_valid = σi_prime is not None
+        print(f"Reproduced key (σi_prime): {σi_prime.hex() if σi_prime else None}")
+        return is_valid, σi_prime
+
+
+
+
+    
+
+        
+    def clear_user_data(self):
+        """Simülasyon sonunda SmartCard'daki verileri sıfırlar."""
+        self.smart_card.clear()
+        print("All user data cleared from SmartCard.")
+    
 
     def device_to_fog(self):
         r1, TS1 = self.generate_r_and_ts()
