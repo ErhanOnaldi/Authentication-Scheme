@@ -11,6 +11,14 @@ from cryptography.hazmat.backends import default_backend
 import sympy
 import utils
 import fuzzyextractor
+from takebiodata import collect_biometric_data
+
+def hi(data, output_length=32):
+        #Hash function for h0 and h1.
+        digest = hashes.Hash(hashes.SHA3_512(), backend=default_backend())
+        digest.update(data)
+        return digest.finalize()[:output_length]
+
 
 class Entity:
     def __init__(self, p, f, g, order, h0, h1, h2, G, cloud_public_key, fog_public_key, device_public_key):
@@ -25,6 +33,8 @@ class Entity:
         self.cloud_public_key = cloud_public_key
         self.fog_public_key = fog_public_key
         self.device_public_key = device_public_key
+        self.hi = hi
+        self.DELTA_T = 1
 
     def generate_r_and_ts(self):
         r = secrets.randbelow(self.G.curve.key_size)
@@ -53,6 +63,7 @@ class TrustedAuthority:
         self.h0 = self._hash_function  # h0, h1 aynı fonksiyonu kullanıyor
         self.h1 = self._hash_function
         self.h2 = self._hash_function_z_star #h2
+        self.hi = hi
         self.G = ec.EllipticCurvePublicNumbers(
             x=0xaa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7,
             y=0x3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f,
@@ -94,6 +105,11 @@ class TrustedAuthority:
             if int.from_bytes(result, 'big') != 0:
                 return result
 
+    def point_multiply(self, public_key, scalar):
+        curve = public_key.curve
+        result = utils.scalar_mult(scalar, public_key, curve)
+        return result
+    
     def _generate_id(self):
         return os.urandom(32)
 
@@ -167,7 +183,7 @@ class TrustedAuthority:
     def register_user(self, UIDi):
         e = secrets.token_bytes(16)  # Generate a random nonce e
         RTi = self._generate_rt()  # Generate a registration timestamp RTi
-
+        
         # Compute h1(x∥e)
         h1_x_e = self.h1(self.master_key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -186,14 +202,11 @@ class TrustedAuthority:
         Hn = self.h1(UIDi + mi_bytes + RTi.to_bytes(48, 'big'))
 
         # Calculate Vi = h1(x∥e) ⊕ hi(UIDi)
-        Vi = h1_x_e_int ^ int.from_bytes(self.h1(UIDi), 'big')
+        Vi = h1_x_e_int ^ int.from_bytes(self.hi(UIDi), 'big')
 
-        return Vi, RTi  # Return Vi and RTi
-    
-    def point_multiply(self, public_key, scalar):
-        curve = public_key.curve
-        result = utils.scalar_mult(scalar, public_key, curve)
-        return result
+        return Vi, RTi
+
+
 
 
 class SmartCard:
@@ -220,7 +233,7 @@ class SmartCard:
         """SmartCard'daki tüm verileri sıfırlar."""
         self.storage.clear()
 
-
+FIXED_BIO_DATA = b'\x00' * 16
 class SmartDevice(Entity):
     
     def __init__(self, device_data, p, f, g, order, h0, h1, h2, G, cloud_public_key, fog_public_key, device_public_key):
@@ -231,46 +244,63 @@ class SmartDevice(Entity):
         self.Ksf = None
         self.user_information = {}
         self.smart_card = SmartCard()
-        self.extractor = fuzzyextractor.FuzzyExtractor(16, 8)  # 16 byte input, 8 bit tolerance
-        
+        self.extractor = fuzzyextractor.FuzzyExtractor(16, 8)
+        self.mi_prime = None
+        self.RV1 = None
+        self.user_session_key = None
+
+
     def identify_user(self):
         """Prompts the user for IDi and calculates UIDi."""
-        IDi = input("Please enter the user identity (IDi): ")
-        bi = secrets.token_bytes(16)  # Generate a random nonce bi
+        IDi = input("Enter your ID: ")
+        bi = secrets.token_bytes(32)
         UIDi = self.h1(IDi.encode() + bi)
-        
+
         # Store IDi and bi in user_information for future use
         self.user_information['IDi'] = IDi
         self.user_information['bi'] = bi
         self.user_information['UIDi'] = UIDi
         
         return UIDi
+
     
     def store_new_user(self, Vi, RTi):
-        PWi = input("Enter Password: ")
-        BIOi = input("Enter BIO (Biometric): ").encode('utf-8')
-
+        PWi = input("Enter your password: ")
+        BIOi = FIXED_BIO_DATA
+        
         # Ensure BIOi is of consistent length (e.g., 16 bytes)
         BIOi = BIOi.ljust(16, b'\0')[:16]
 
         # Gen(BIOi) = (σi, τi)
         σi, τi = self.Gen(BIOi)
-        print(f"Generated key (σi) for storage: {σi.hex()}")
 
         # h(x∥e)' = Vi ⊕ h(UIDi)
-        h_x_e_prime = Vi ^ int.from_bytes(self.h0(self.user_information['UIDi']), 'big')
+        h_x_e_prime = Vi ^ int.from_bytes(self.hi(self.user_information['UIDi']), 'big')
 
         # m'i = h1(x∥e)' * G
         m_prime_i = self.point_multiply(self.G, h_x_e_prime)
+
+        # Hn' = h1(UIDi ∥ m'i ∥ RTi)
+        Hn_prime = self.h1(self.user_information['UIDi'] + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big') + RTi.to_bytes(8, 'big'))
+        
 
         # RPW = h1(PWi∥σi∥m'i)
         RPW = self.h1(PWi.encode('utf-8') + σi + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big'))
 
         # Bi = h1(Hn' ∥ RPW ∥ bi)
-        Bi = self.h1(h_x_e_prime.to_bytes((h_x_e_prime.bit_length() + 7) // 8, 'big') + RPW + self.user_information['bi'])
+        Bi = self.h1(Hn_prime + RPW + self.user_information['bi'])
 
-        # Ri = bi ⊕ h1(IDi ∥ PWi ∥ σi)
-        Ri = int.from_bytes(self.user_information['bi'], 'big') ^ int.from_bytes(self.h1(self.user_information['UIDi'] + PWi.encode('utf-8') + σi), 'big')
+        # Ri hesaplama işlemi
+        bi_bytes = self.user_information['bi']
+        h1_result = self.h1(self.user_information['IDi'].encode('utf-8') + PWi.encode('utf-8') + σi)
+        bi_int = int.from_bytes(bi_bytes, 'big')
+        h1_int = int.from_bytes(h1_result, 'big')
+        max_bit_length = max(bi_int.bit_length(), h1_int.bit_length())
+        bi_int_padded = bi_int.to_bytes((max_bit_length + 7) // 8, 'big')
+        h1_int_padded = h1_int.to_bytes((max_bit_length + 7) // 8, 'big')
+        if len(bi_int_padded) < len(h1_int_padded):
+            bi_int_padded = bi_int_padded.rjust(len(h1_int_padded), b'\x00')
+        Ri = int.from_bytes(bi_int_padded, 'big') ^ int.from_bytes(h1_int_padded, 'big')
 
         # Store the values
         self.user_information['Bi'] = Bi
@@ -279,6 +309,8 @@ class SmartDevice(Entity):
         self.user_information['τi'] = τi
         self.user_information['Vi'] = Vi
         self.user_information['RTi'] = RTi
+        print("Stored user information successfully.")
+
 
         # SmartCard'a verileri kaydet
         self.smart_card.store('Bi', Bi)
@@ -291,13 +323,16 @@ class SmartDevice(Entity):
         self.smart_card.store('h1', self.h1)
         self.smart_card.store('h2', self.h2)
 
-        print(f"Stored key (σi): {σi.hex()}")
-        print("User information stored successfully in SmartCard!")
+        return True
+
+
 
     def login(self):
-        IDi = input("Please enter your ID (IDi): ")
-        PWi = input("Please enter your password (PWi): ")
-        BIOi = input("Please enter your biometric data (BIOi): ").encode('utf-8')
+        IDi = input("Enter your ID: ")
+        PWi = input("Enter your password: ")
+        BIOi = FIXED_BIO_DATA
+        #BIOi = collect_biometric_data()
+        BIOi = BIOi.ljust(16, b'\0')[:16]
 
         if not self.user_information:
             print("No user information found. Please register first.")
@@ -306,7 +341,7 @@ class SmartDevice(Entity):
         Vi = self.user_information['Vi']
         Ri = self.user_information['Ri']
         helper = self.user_information['τi']
-        print(f"Loaded τi: {helper}")
+        
 
         # Rep function to calculate σi'
         is_valid, σi_prime = self.Rep(BIOi, helper)
@@ -315,40 +350,38 @@ class SmartDevice(Entity):
             return False
 
         # Calculate b'i
-        b_prime_i = Ri ^ int.from_bytes(self.h1(IDi.encode() + PWi.encode() + σi_prime), 'big')
-        print(f"Calculated b_prime_i: {b_prime_i}")
+        h1_result = self.h1(IDi.encode('utf-8') + PWi.encode('utf-8') + σi_prime)
 
+        h1_int = int.from_bytes(h1_result, 'big')
+        h1_padded = h1_int.to_bytes((h1_int.bit_length() + 7) // 8, 'big')
+
+        # b_prime_i hesapla
+        b_prime_i = Ri ^ int.from_bytes(h1_padded, 'big')
         # Calculate UID'i
         UID_prime_i = self.h1(IDi.encode() + b_prime_i.to_bytes((b_prime_i.bit_length() + 7) // 8, 'big'))
-        print(f"Calculated UID_prime_i: {UID_prime_i.hex()}")
 
         # Calculate h(x∥e)'
-        h_x_e_prime = Vi ^ int.from_bytes(self.h0(UID_prime_i), 'big')
-        print(f"Calculated h_x_e_prime: {h_x_e_prime}")
+        h_x_e_prime = Vi ^ int.from_bytes(self.hi(UID_prime_i), 'big')
 
         # Calculate m'i
         m_prime_i = self.point_multiply(self.G, h_x_e_prime)
-        print(f"Calculated m_prime_i: {m_prime_i.public_numbers().x}")
+        self.mi_prime = m_prime_i
 
         # Calculate H'n
         H_prime_n = self.h1(UID_prime_i + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big') + self.user_information['RTi'].to_bytes(8, 'big'))
-        print(f"Calculated H_prime_n: {H_prime_n.hex()}")
 
         # Calculate RPW'
         RPW_prime = self.h1(PWi.encode() + σi_prime + m_prime_i.public_numbers().x.to_bytes((m_prime_i.public_numbers().x.bit_length() + 7) // 8, 'big'))
-        print(f"Calculated RPW_prime: {RPW_prime.hex()}")
 
         # Calculate B'i and verify
         Bi_prime = self.h1(H_prime_n + RPW_prime + b_prime_i.to_bytes((b_prime_i.bit_length() + 7) // 8, 'big'))
-        print(f"Calculated Bi_prime: {Bi_prime.hex()}")
-        print(f"Stored Bi: {self.user_information['Bi'].hex()}")
 
         if Bi_prime == self.user_information['Bi']:
             print("Login successful!")
-            return True
+            
         else:
-            print("Login failed. Incorrect credentials.")
-            return False
+            raise ValueError("Bi and Bi_prime is not equal")
+            
 
         # Adım 10: T1 ve w1 üretimi
         T1 = int(time.time())
@@ -356,6 +389,7 @@ class SmartDevice(Entity):
 
         # Adım 11: RV1 ve RV2 hesapla
         RV1 = self.point_multiply(self.fog_public_key, w1)
+        self.RV1 = RV1
         RV2 = self.point_multiply(self.G, w1)
 
         # Adım 12: Csm hesapla
@@ -370,19 +404,60 @@ class SmartDevice(Entity):
             "CIDs": self.device_CID,
             "RV2": RV2,
             "Csm": Csm,
-            "T1": T1,
-            "DUIDi": DUIDi
+            "T1": T1
         }
 
         print("Login phase completed. Message to Fog Server prepared.")
         return message_to_fog
 
-        
+    def smartdevice_process_message(self, message_from_fog):
+        # Mesajdan verileri ayıkla
+        Fsm = message_from_fog['Fsm']
+        Fsn = message_from_fog['Fsn']
+        T4 = message_from_fog['T4']
+        FCSUIDi = message_from_fog['FCSUIDi']
+        T3 = message_from_fog['T3']
+        CV2 = message_from_fog['CV2']
 
+        # Adım 1: Zaman kontrolü
+        T4_star = int(time.time())
+        if T4_star - T4 > self.DELTA_T:
+            raise ValueError("Time difference exceeds allowed limit.")
+
+        # Adım 2: FV1' hesapla
+        FV1_prime = int.from_bytes(Fsn, 'big') ^ int.from_bytes(self.h2(self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                                            T4.to_bytes(8, 'big')), 'big')
+        CV1_prime = int.from_bytes(Fsm, 'big') ^ int.from_bytes(self.h2(Fsn + 
+                                                                        self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                                                                        T4.to_bytes(8, 'big')), 'big')
+
+        # Adım 4: SKsfc hesapla
+        SKsfc = self.h2(self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                        self.RV1.public_numbers().x.to_bytes((self.RV1.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                        FV1_prime.to_bytes((FV1_prime.bit_length() + 7) // 8, 'big') + 
+                        CV1_prime.to_bytes((CV1_prime.bit_length() + 7) // 8, 'big'))
+        self.user_session_key = SKsfc
+
+        # Adım 5: CSUIDi' hesapla
+        CSUIDi_prime = self.h2(SKsfc + self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                            T3.to_bytes(8, 'big') + 
+                            CV1_prime.to_bytes((CV1_prime.bit_length() + 7) // 8, 'big'))
+
+        # Adım 6: FCSUIDi' hesapla
+        FCSUIDi_prime = self.h2(CSUIDi_prime + T4.to_bytes(8, 'big') + 
+                                self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                                CV1_prime.to_bytes((CV1_prime.bit_length() + 7) // 8, 'big'))
+
+
+        # Adım 7: FCSUIDi' doğrula
+        if FCSUIDi_prime != FCSUIDi:
+            raise ValueError("FCSUIDi doğrulama hatası.")
+
+        print(f"Session key successfully created: {SKsfc.hex()}")
+        
     def Gen(self, BIOi):
         """Gen fonksiyonu: Biometrik verilerden (σi, τi) değerlerini üretir."""
         key, helper = self.extractor.generate(BIOi)
-        print(f"Generated key: {key.hex()}, helper: {helper}")
         return key, helper
 
 
@@ -390,14 +465,7 @@ class SmartDevice(Entity):
         """Rep fonksiyonu: Biometrik veriyi ve helper değerini kullanarak σ'i üretir."""
         σi_prime = self.extractor.reproduce(BIOi, helper)
         is_valid = σi_prime is not None
-        print(f"Reproduced key (σi_prime): {σi_prime.hex() if σi_prime else None}")
         return is_valid, σi_prime
-
-
-
-
-    
-
         
     def clear_user_data(self):
         """Simülasyon sonunda SmartCard'daki verileri sıfırlar."""
@@ -473,6 +541,137 @@ class FogServer(Entity):
         self.fog_CID = fog_data["CID"]
         self.Kfc = None
         self.Ksf = None 
+        self.mi_prime = None
+        self.RV1_prime = None
+        self.FV1= None
+        self.fog_session_key= None
+
+    def fog_process_message(self, message_from_device):
+        # Verileri mesajdan ayıkla
+        CIDs = message_from_device['CIDs']
+        RV2 = message_from_device['RV2']
+        Csm = message_from_device['Csm']
+        T1 = message_from_device['T1']
+        
+
+        # Adım 1: Zaman kontrolü
+        T1_star = int(time.time())  # Fog server'da mevcut zaman
+        if T1_star - T1 > self.DELTA_T:
+            raise ValueError("Time difference exceeds allowed limit.")
+
+        # Adım 2: RV'1 hesapla
+        RV1_prime = self.point_multiply(RV2, self.fog_n)  # nf, fog server'ın private key'idir
+        self.RV1_prime = RV1_prime
+        # Adım 3: h(x∥e)' hesapla
+        h2_result = self.h2(CIDs + T1.to_bytes(8, 'big') + RV1_prime.public_numbers().x.to_bytes((RV1_prime.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        h2_int = int.from_bytes(h2_result, 'big')
+        Csm_int = int.from_bytes(Csm, 'big')
+        hx_e_prime = Csm_int ^ h2_int
+        # Adım 4: m'i hesapla
+        mi_prime = self.point_multiply(self.G, hx_e_prime)
+        self.mi_prime = mi_prime
+
+        # Adım 5: DUID'i hesapla
+        DUIDi_prime = self.h2(CIDs + RV1_prime.public_numbers().x.to_bytes((RV1_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + T1.to_bytes(8, 'big') + mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big'))
+
+        # Adım 6: T2 ve w2 üret
+        T2 = int(time.time())
+        w2 = secrets.randbelow(self.G.curve.key_size)
+
+        # Adım 7: FV1 ve FV2 hesapla
+        FV1 = self.point_multiply(self.cloud_public_key, w2)
+        print(f"FV1: {FV1.public_numbers().x}")
+        self.FV1 = FV1
+        FV2 = self.point_multiply(self.G, w2)
+
+        # Adım 8: Cf hesapla
+        h2_result = self.h2(self.fog_CID + T2.to_bytes(8, 'big') + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        h2_int = int.from_bytes(h2_result, 'big')
+        Cf = h2_int ^ hx_e_prime
+        # Adım 9: Fc hesapla
+        Cf_bytes = Cf.to_bytes((Cf.bit_length() + 7) // 8, 'big')
+
+        # Adım 9: Fc hesapla
+        Fc = int.from_bytes(self.h2(hx_e_prime.to_bytes((hx_e_prime.bit_length() + 7) // 8, 'big') + Cf_bytes + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big')), 'big') ^ int.from_bytes(RV1_prime.public_numbers().x.to_bytes((RV1_prime.public_numbers().x.bit_length() + 7) // 8, 'big'), 'big')
+
+        # Adım 10: FUIDi hesapla
+        FUIDi = self.h2(DUIDi_prime + mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big') + RV1_prime.public_numbers().x.to_bytes((RV1_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + T1.to_bytes(8, 'big') + T2.to_bytes(8, 'big'))
+        print("fog successfully processed message")
+        # Mesajı oluştur
+        message_to_cloud = {
+            "CIDs": CIDs,
+            "CIDf": self.fog_CID,
+            "Csm": Csm,
+            "Cf": Cf,
+            "Fc": Fc,
+            "FUIDi": FUIDi,
+            "RV2": RV2,
+            "FV2": FV2,
+            "T1": T1,
+            "T2": T2
+        }
+
+        return message_to_cloud
+    
+    def fog_process_message_from_cloud(self, message_from_cloud):
+        # Mesajdan verileri ayıkla
+        CV2 = message_from_cloud['CV2']
+        T3 = message_from_cloud['T3']
+
+        # Adım 1: Zaman kontrolü
+        T3_star = int(time.time())
+        if T3_star - T3 > self.DELTA_T:
+            raise ValueError("Time difference exceeds allowed limit.")
+        
+        CV1 = self.point_multiply(CV2, self.fog_n)
+        # Adım 3: SKfcs hesapla
+        RV1_prime_x_bytes = self.RV1_prime.public_numbers().x.to_bytes(
+            (self.RV1_prime.public_numbers().x.bit_length() + 7) // 8, 'big'
+        )
+        FV1_x_bytes = self.FV1.public_numbers().x.to_bytes(
+            (self.FV1.public_numbers().x.bit_length() + 7) // 8, 'big'
+        )
+        CV1_x_bytes = CV1.public_numbers().x.to_bytes(
+            (CV1.public_numbers().x.bit_length() + 7) // 8, 'big'
+        )
+
+        SKfcs = self.h2(
+            self.mi_prime.public_numbers().x.to_bytes(
+                (self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big'
+            ) + RV1_prime_x_bytes + FV1_x_bytes + CV1_x_bytes
+        )
+        self.fog_session_key = SKfcs
+        # Adım 4: CSUID'i hesapla
+        CSUIDi_prime = self.h2(SKfcs + self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                            T3.to_bytes(8, 'big') + CV1.public_numbers().x.to_bytes((CV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+
+        # Adım 5: FCSUID'i hesapla
+        T4 = int(time.time())
+        FCSUIDi = self.h2(CSUIDi_prime + T4.to_bytes(8, 'big') + self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                        CV1.public_numbers().x.to_bytes((CV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+
+        # Adım 6: Fsn hesapla
+        Fsn = int.from_bytes(self.h2(self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                                    T4.to_bytes(8, 'big')), 'big') ^ int.from_bytes(self.FV1.public_numbers().x.to_bytes((self.FV1.public_numbers().x.bit_length() + 7) // 8, 'big'), 'big')
+
+        # Adım 7: Fsm hesapla
+        Fsm = int.from_bytes(self.h2(Fsn.to_bytes((Fsn.bit_length() + 7) // 8, 'big') + 
+                                    self.mi_prime.public_numbers().x.to_bytes((self.mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + 
+                                    T4.to_bytes(8, 'big')), 'big') ^ int.from_bytes(CV1.public_numbers().x.to_bytes((CV1.public_numbers().x.bit_length() + 7) // 8, 'big'), 'big')
+
+        # Mesajı oluştur
+        message_to_device = {
+            "Fsm": Fsm.to_bytes((Fsm.bit_length() + 7) // 8, 'big'),
+            "Fsn": Fsn.to_bytes((Fsn.bit_length() + 7) // 8, 'big'),
+            "T4": T4,
+            "FCSUIDi": FCSUIDi,
+            "T3": T3,
+            "CV2": CV2
+        }
+
+        print("Fog successfully processed message and send message to Device")
+        return message_to_device
+
 
     def fog_to_device(self, message_from_device, r1, G1_bytes, G1):
         TS1 = message_from_device["TS1"]
@@ -606,6 +805,72 @@ class CloudServer(Entity):
         self.cloud_n = cloud_data["n"]
         self.cloud_CID = cloud_data["CID"]
         self.Kcf = None
+        self.cloud_session_key=None
+
+    def cloud_process_message(self, message_from_fog):
+        # Mesajdan verileri ayıkla
+        CIDs = message_from_fog['CIDs']
+        CIDf = message_from_fog['CIDf']
+        Csm = message_from_fog['Csm']
+        Cf = message_from_fog['Cf']
+        Fc = message_from_fog['Fc']
+        FUIDi = message_from_fog['FUIDi']
+        RV2 = message_from_fog['RV2']
+        FV2 = message_from_fog['FV2']
+        T1 = message_from_fog['T1']
+        T2 = message_from_fog['T2']
+
+        # Adım 1: Zaman kontrolü
+        T2_star = int(time.time())
+        if T2_star - T2 > self.DELTA_T:
+            raise ValueError("Time difference exceeds allowed limit.")
+        
+        # Adım 2: FV1 hesapla
+        FV1 = self.point_multiply(FV2, self.cloud_n)  # nc, cloud server'ın n değeri
+
+        # Adım 3: h(x∥e)' hesapla
+        h2_result = self.h2(CIDf + T2.to_bytes(8, 'big') + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        h2_int = int.from_bytes(h2_result, 'big')
+        hx_e_prime = Cf ^ h2_int  # Cf bir int olduğundan doğrudan kullanıyoruz
+
+        # Adım 4: m'i hesapla
+        mi_prime = self.point_multiply(self.G, hx_e_prime)
+
+        # Adım 5: RV'1 hesapla
+        h2_result = self.h2(hx_e_prime.to_bytes((hx_e_prime.bit_length() + 7) // 8, 'big') + Cf.to_bytes((Cf.bit_length() + 7) // 8, 'big') + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        RV1_prime = Fc ^ int.from_bytes(h2_result, 'big')  # Fc de bir int olduğundan doğrudan kullanıyoruz
+
+        # Adım 6: DUID'i hesapla
+        DUIDi_prime = self.h2(CIDs + RV1_prime.to_bytes((RV1_prime.bit_length() + 7) // 8, 'big') + T1.to_bytes(8, 'big') + mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big'))
+
+        # Adım 7: FUID'i hesapla
+        FUIDi_prime = self.h2(DUIDi_prime + mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big') + RV1_prime.to_bytes((RV1_prime.bit_length() + 7) // 8, 'big') + T1.to_bytes(8, 'big') + T2.to_bytes(8, 'big'))
+
+        # Adım 8: FUID'i doğrula
+        if FUIDi_prime != FUIDi:
+            raise ValueError("FUIDi doğrulama hatası.")
+
+        # Adım 9: T3 ve w3 üret
+        T3 = int(time.time())
+        w3 = secrets.randbelow(self.G.curve.key_size)
+
+        # Adım 10: CV1 ve CV2 hesapla
+        CV1 = self.point_multiply(self.fog_public_key, w3)
+        CV2 = self.point_multiply(self.G, w3)
+        # Adım 11: SKCfs hesapla
+        SKCfs = self.h2(mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + RV1_prime.to_bytes((RV1_prime.bit_length() + 7) // 8, 'big') + FV1.public_numbers().x.to_bytes((FV1.public_numbers().x.bit_length() + 7) // 8, 'big') + CV1.public_numbers().x.to_bytes((CV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        self.cloud_session_key = SKCfs
+        # Adım 12: CSUIDi hesapla
+        CSUIDi = self.h2(SKCfs + mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + T3.to_bytes(8, 'big') + CV1.public_numbers().x.to_bytes((CV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
+        print(f"CSUIDi: {CSUIDi.hex()}")
+        # Mesajı oluştur
+        message_to_fog = {
+            "CV2": CV2,
+            "T3": T3
+        }
+        print("Cloud successfully processed message from cloud.")
+        return message_to_fog
+
 
     def cloud_response(self, message_from_fog, r3, G5, G6):
         TS3 = message_from_fog["TS3"]

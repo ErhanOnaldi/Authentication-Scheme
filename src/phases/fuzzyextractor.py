@@ -1,3 +1,4 @@
+
 from math import log
 from os import urandom
 from struct import pack, unpack

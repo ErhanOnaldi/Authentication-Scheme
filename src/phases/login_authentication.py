@@ -8,9 +8,15 @@ def main():
     device_data, device_public_key = ta.register_smart_device()
     
 
-    device = entities.SmartDevice(device_data=device_data, p=ta.p, f=ta.f, g=ta.g, order=ta.order,
-                                  h0=ta.h0, h1=ta.h1, h2=ta.h2, G=ta.G, 
-                                  cloud_public_key=cloud_public_key, fog_public_key=fog_public_key, device_public_key=device_public_key)
+    device = entities.SmartDevice(device_data, ta.p, ta.f, ta.g, ta.order, 
+                                           ta.h0, ta.h1, ta.h2, ta.G, 
+                                           cloud_public_key, fog_public_key, device_public_key)
+    fog = entities.FogServer(fog_data, ta.p, ta.f, ta.g, ta.order, 
+                                      ta.h0, ta.h1, ta.h2, ta.G, 
+                                      cloud_public_key, fog_public_key, device_public_key)
+    cloud = entities.CloudServer(cloud_data, ta.p, ta.f, ta.g, ta.order, 
+                                          ta.h0, ta.h1, ta.h2, ta.G, 
+                                          cloud_public_key, fog_public_key, device_public_key)
     # Kullanıcı kimliğini belirle
     UIDi = device.identify_user()
 
@@ -21,10 +27,11 @@ def main():
     device.store_new_user(Vi, RTi)
 
     # Kullanıcı girişini dene
-    _test_login_data_from_device = device.login()
-
-    print(_test_login_data_from_device)
-
+    message_from_device_to_fog = device.login()
+    message_from_fog_to_cloud =fog.fog_process_message(message_from_device_to_fog)
+    message_from_cloud_to_fog = cloud.cloud_process_message(message_from_fog_to_cloud)
+    message_from_fog_to_device = fog.fog_process_message_from_cloud(message_from_cloud_to_fog)
+    device.smartdevice_process_message(message_from_fog_to_device)
 
 if __name__ == "__main__":
     main()
