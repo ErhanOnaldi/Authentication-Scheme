@@ -1,4 +1,4 @@
-import entities
+import core.entities as entities
 
 def main():
     # Trusted Authority'yi başlat

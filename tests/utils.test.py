@@ -1,7 +1,6 @@
-import utils
+import core.utils as utils
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.backends import default_backend
-import pre_deployment
 
 def test_scalar_mult_large_positive_scalar():
     k = 5

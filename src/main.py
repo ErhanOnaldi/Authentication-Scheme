@@ -1,6 +1,7 @@
-import entities
+import core.entities as entities
 
 #Pre depoloyment phase
+print("Pre deployment phase")
 ta = entities.TrustedAuthority()
 cloud_data, cloud_public_key = ta.register_cloud_server()
 fog_data, fog_public_key = ta.register_fog_node()
@@ -49,6 +50,7 @@ print("Key exchange between Fog Node and Cloud Server successful, Kfc =", Kfc.he
 
 
 #User Registiration Phase
+print("Registiration phase")
 UIDi = device.identify_user()
 
     # Trusted Authority üzerinden Vi ve RTi değerlerini al
@@ -58,6 +60,7 @@ Vi, RTi = ta.register_user(UIDi)
 device.store_new_user(Vi, RTi)
 
 #Login Authentication Phase
+print("login phase")
 message_from_device_to_fog = device.login()
 message_from_fog_to_cloud =fog.fog_process_message(message_from_device_to_fog)
 message_from_cloud_to_fog = cloud.cloud_process_message(message_from_fog_to_cloud)

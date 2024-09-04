@@ -7,8 +7,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 import sympy
-import utils
-import entities
+import core.utils as utils
+import core.entities as entities
 class SecureKeyExchange:
     def __init__(self):
         print("Initializing SecureKeyExchange...")

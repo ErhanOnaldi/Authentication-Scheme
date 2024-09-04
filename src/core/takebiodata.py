@@ -14,7 +14,7 @@ def collect_biometric_data(cascade_path='haarcascade_frontalface_default.xml'):
         print("Kameraya erişilemiyor.")
         return None
     
-    print("Lütfen yüzünüzü kameraya yönlendirin ve 'q' tuşuna basın.")
+    print("Please press 'q' after camera detects your face.")
     
     face_captured = False
     captured_frame = None
@@ -38,7 +38,7 @@ def collect_biometric_data(cascade_path='haarcascade_frontalface_default.xml'):
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
         
         # Kareyi göster
-        cv2.imshow('Biyometrik Veri Toplama - Yüzünüzü Görüntüleyin', frame)
+        cv2.imshow('Take Bio Data', frame)
         
         # 'q' tuşuna basıldığında yüzü yakala
         if cv2.waitKey(1) & 0xFF == ord('q'):

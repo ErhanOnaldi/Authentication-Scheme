@@ -9,9 +9,9 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 import sympy
-import utils
-import fuzzyextractor
-from takebiodata import collect_biometric_data
+import core.utils as utils
+import core.fuzzyextractor as fuzzyextractor
+from core.takebiodata import collect_biometric_data
 
 def hi(data, output_length=32):
         #Hash function for h0 and h1.
@@ -580,7 +580,6 @@ class FogServer(Entity):
 
         # Adım 7: FV1 ve FV2 hesapla
         FV1 = self.point_multiply(self.cloud_public_key, w2)
-        print(f"FV1: {FV1.public_numbers().x}")
         self.FV1 = FV1
         FV2 = self.point_multiply(self.G, w2)
 
@@ -862,13 +861,12 @@ class CloudServer(Entity):
         self.cloud_session_key = SKCfs
         # Adım 12: CSUIDi hesapla
         CSUIDi = self.h2(SKCfs + mi_prime.public_numbers().x.to_bytes((mi_prime.public_numbers().x.bit_length() + 7) // 8, 'big') + T3.to_bytes(8, 'big') + CV1.public_numbers().x.to_bytes((CV1.public_numbers().x.bit_length() + 7) // 8, 'big'))
-        print(f"CSUIDi: {CSUIDi.hex()}")
         # Mesajı oluştur
         message_to_fog = {
             "CV2": CV2,
             "T3": T3
         }
-        print("Cloud successfully processed message from cloud.")
+        print("Cloud successfully processed message from fog.")
         return message_to_fog
 
 

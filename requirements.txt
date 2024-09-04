@@ -1,10 +1,4 @@
 cryptography
-ecdsa
-secrets
-pycryptodome
-pyopenssl
-paho-mqtt
-boto3
-oauthlib
-pyjwt
-simpy
+numpy
+opencv-python
+sympy

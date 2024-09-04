@@ -2,7 +2,7 @@
 from math import log
 from os import urandom
 from struct import pack, unpack
-import hashlib  # hashlib.pbkdf2_hmac burada kullanacağız
+import hashlib  
 import numpy as np
 
 class FuzzyExtractor(object):

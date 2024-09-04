@@ -1,5 +1,5 @@
 
-import entities
+import core.entities as entities
 
 def main():
     # device_data burada tanımlanmalı
