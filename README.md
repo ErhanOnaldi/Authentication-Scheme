@@ -40,7 +40,7 @@ pip install -r requirements.txt
 Setup
 
 Clone the repository:
-git clone https://github.com/your-username/Authentication-Scheme.git
+git clone https://github.com/ErhanOnaldi/Authentication-Scheme
 cd Authentication-Scheme
 
 Install dependencies:
