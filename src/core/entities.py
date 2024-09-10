@@ -341,8 +341,6 @@ class SmartDevice(Entity):
         Vi = self.user_information['Vi']
         Ri = self.user_information['Ri']
         helper = self.user_information['τi']
-        
-
         # Rep function to calculate σi'
         is_valid, σi_prime = self.Rep(BIOi, helper)
         if not is_valid:
@@ -406,6 +404,9 @@ class SmartDevice(Entity):
             "Csm": Csm,
             "T1": T1
         }
+        print(f"CIDs bit size: {int.from_bytes(self.device_CID, 'big').bit_length()}")
+        print(f"RV2 bit size: {RV2.public_numbers().x.bit_length()}")
+        print(f"Csm bit size: {int.from_bytes(Csm, 'big').bit_length()}")
 
         print("Login phase completed. Message to Fog Server prepared.")
         return message_to_fog
@@ -453,6 +454,7 @@ class SmartDevice(Entity):
         if FCSUIDi_prime != FCSUIDi:
             raise ValueError("FCSUIDi doğrulama hatası.")
 
+        print(f"Sksfc bit size: {int.from_bytes(SKsfc, 'big').bit_length()}")
         print(f"Session key successfully created: {SKsfc.hex()}")
         
     def Gen(self, BIOi):
@@ -490,6 +492,11 @@ class SmartDevice(Entity):
             "M1": M1,
             "G2": G2
         }
+        print(f"CIDs bit size: {int.from_bytes(self.device_CID, 'big').bit_length()}")
+        print(f"RIDs bit size: {RIDs.bit_length()}")
+        print(f"M1 bit size: {int.from_bytes(M1, 'big').bit_length()}")
+        print(f"G2 bit size: {G2.public_numbers().x.bit_length()}")
+
         return message_to_fog, r1, G1, G1_bytes
 
     def device_response(self, message_from_fog, r1, G1, G1_bytes):
@@ -529,7 +536,7 @@ class SmartDevice(Entity):
 
         if not secrets.compare_digest(M2_prime, message_from_fog["M2"]):
             raise ValueError("M2 verification failed")
-
+        print(f"Ksf bit size: {int.from_bytes(Ksf, 'big').bit_length()}")
         return Ksf
 
 
@@ -609,7 +616,15 @@ class FogServer(Entity):
             "T1": T1,
             "T2": T2
         }
-
+        print(f"CIDs bit size:{int.from_bytes(CIDs,'big').bit_length()}")
+        print(f"CIDf bit size:{int.from_bytes(self.fog_CID,'big').bit_length()}")
+        print(f"Csm bit size:{int.from_bytes(Csm,'big').bit_length()}")
+        print(f"Cf bit size:{Cf.bit_length()}")
+        print(f"Fc bit size:{Fc.bit_length()}")
+        print(f"FUIDi bit size:{int.from_bytes(FUIDi,'big').bit_length()}")
+        print(f"RV2 bit size:{RV2.public_numbers().x.bit_length()}")
+        print(f"FV2 bit size:{FV2.public_numbers().x.bit_length()}")
+        
         return message_to_cloud
     
     def fog_process_message_from_cloud(self, message_from_cloud):
@@ -667,6 +682,10 @@ class FogServer(Entity):
             "T3": T3,
             "CV2": CV2
         }
+        print(f"Fsm bit size: {Fsm.bit_length()}")
+        print(f"Fsn bit size: {Fsn.bit_length()}")
+        print(f"CV2 bit size: {CV2.public_numbers().x.bit_length()}")
+        print(f"FCSUIDi bit size: {int.from_bytes(FCSUIDi, 'big').bit_length()}")
 
         print("Fog successfully processed message and send message to Device")
         return message_to_device
@@ -732,6 +751,14 @@ class FogServer(Entity):
             "G4": G4,
             "TS2": TS2
         }
+
+        print(f"M2 bit size: {int.from_bytes(M2, 'big').bit_length()}")
+        print(f"CIDf bit size: {int.from_bytes(self.fog_CID, 'big').bit_length()}")
+        print(f"FID bit size: {FID.bit_length()}")
+        print(f"G4 bit size: {G4.public_numbers().x.bit_length()}")
+
+
+
         return message_to_device, G4
 
     def fog_to_cloud(self):
@@ -750,6 +777,9 @@ class FogServer(Entity):
             "TS3": TS3,
             "M3": M3
         }
+        print(f"M3 bit size: {int.from_bytes(M3, 'big').bit_length()}")
+        print(f"CIDf bit size: {int.from_bytes(self.fog_CID, 'big').bit_length()}")
+        print(f"RIDf bit size: {RIDf.bit_length()}")
         return message_to_cloud, r3, G5, G6
 
     def fog_response(self, message_from_cloud, r3, G5, nf):
@@ -794,6 +824,7 @@ class FogServer(Entity):
         if not secrets.compare_digest(M4_prime, message_from_cloud["M4"]):
             raise ValueError("M4 verification failed")
 
+        print(f"Kfc bit size: {int.from_bytes(Kfc_prime, 'big').bit_length()}")
         return Kfc_prime
 
 
@@ -866,6 +897,7 @@ class CloudServer(Entity):
             "CV2": CV2,
             "T3": T3
         }
+        print(f"CV2 bit size: {CV2.public_numbers().x.bit_length()}")
         print("Cloud successfully processed message from fog.")
         return message_to_fog
 
@@ -934,4 +966,8 @@ class CloudServer(Entity):
             "G8": G8,
             "TS4": TS4
         }
+        print(f"M4 bit size: {int.from_bytes(M4,'big').bit_length()}")
+        print(f"CSID bit size: {CSID.bit_length()}")
+        print(f"G8 bit size: {G8.public_numbers().x.bit_length()}")
+        print(f"CSID bit size: {int.from_bytes(self.cloud_CID,'big').bit_length()}")
         return message_to_fog, nf
