@@ -113,3 +113,4 @@ if __name__ == "__main__":
 
     # Also print Gen function time
     print(f"Gen function time: {gen_time:.6f} seconds")
+    

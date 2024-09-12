@@ -66,3 +66,4 @@ message_from_fog_to_cloud =fog.fog_process_message(message_from_device_to_fog)
 message_from_cloud_to_fog = cloud.cloud_process_message(message_from_fog_to_cloud)
 message_from_fog_to_device = fog.fog_process_message_from_cloud(message_from_cloud_to_fog)
 device.smartdevice_process_message(message_from_fog_to_device)
+
